@@ -6,6 +6,7 @@ use rand::{Rng, SeedableRng};
 use std::io::{Error, ErrorKind};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
+use tokio::time;
 
 /// Contains information parsed from the command-line invocation of balancebeam. The Clap macros
 /// provide a fancy way to automatically construct a command-line argument parser.
@@ -41,6 +42,7 @@ struct CmdOptions {
     max_requests_per_minute: usize,
 }
 
+#[derive(Debug)]
 struct UpstreamAddress {
     address: String,
     alive: bool,
@@ -109,6 +111,18 @@ async fn main() {
         max_requests_per_minute: options.max_requests_per_minute,
     };
     let state_arc = Arc::new(state);
+
+    let state_clone = state_arc.clone();
+    tokio::spawn(async move {
+        let mut interval = time::interval(time::Duration::from_secs(
+            state_clone.active_health_check_interval as u64,
+        ));
+        loop {
+            interval.tick().await;
+            active_health_checks(&state_clone).await;
+        }
+    });
+
     loop {
         let (socket, _) = listener.accept().await.unwrap();
         let state = state_arc.clone();
@@ -116,6 +130,63 @@ async fn main() {
             handle_connection(socket, &state).await;
         });
     }
+}
+
+async fn active_health_checks(state: &ProxyState) {
+    log::info!("Starting active health checks....");
+    let mut dead_upstreams: Vec<String> = Vec::new();
+    let mut live_upstreams: Vec<String> = Vec::new();
+    {
+        let addresses = state.upstream_addresses.read().await;
+        for addr in addresses.iter() {
+            let mut is_alive = addr.alive;
+            let request = http::Request::builder()
+                .method(http::Method::GET)
+                .uri(&state.active_health_check_path)
+                .header("Host", &addr.address)
+                .body(Vec::new())
+                .unwrap();
+            match TcpStream::connect(&addr.address).await {
+                Ok(mut stream) => {
+                    if let Err(e) = request::write_to_stream(&request, &mut stream).await {
+                        log::error!("Failed to write to upstream {}", e);
+                        is_alive = false;
+                    }
+                    match response::read_from_stream(&mut stream, &http::Method::GET).await {
+                        Ok(response) => {
+                            is_alive = response.status().as_u16() == 200;
+                        }
+                        Err(e) => {
+                            log::error!("Error reading from upstream {:?}", e);
+                            is_alive = false;
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::error!(
+                        "Failed to connect to upstream {} {}. Marking it dead",
+                        &addr.address,
+                        e
+                    );
+                    is_alive = false;
+                }
+            }
+            if is_alive != addr.alive {
+                if is_alive {
+                    live_upstreams.push(addr.address.clone());
+                } else {
+                    dead_upstreams.push(addr.address.clone());
+                }
+            }
+        }
+    }
+    for addr in dead_upstreams {
+        mark_upstream_status(state, addr, false).await;
+    }
+    for addr in live_upstreams {
+        mark_upstream_status(state, addr, true).await;
+    }
+    log::info!("Active health checks complete.");
 }
 
 async fn get_live_upstream(state: &ProxyState) -> Option<String> {
@@ -133,13 +204,14 @@ async fn get_live_upstream(state: &ProxyState) -> Option<String> {
     };
 }
 
-async fn mark_upstream_dead(state: &ProxyState, address: String) {
+async fn mark_upstream_status(state: &ProxyState, address: String, is_alive: bool) {
     let mut addresses = state.upstream_addresses.write().await;
     for addr in addresses.iter_mut() {
         if addr.address == address {
-            addr.alive = false;
+            addr.alive = is_alive;
         }
     }
+    log::info!("Upstreams {:?}", addresses);
 }
 
 async fn connect_to_upstream(state: &ProxyState) -> Result<TcpStream, std::io::Error> {
@@ -149,7 +221,7 @@ async fn connect_to_upstream(state: &ProxyState) -> Result<TcpStream, std::io::E
                 Ok(stream) => break Ok(stream),
                 Err(e) => {
                     log::error!("Failed to connect to upstream {}: {}", upstream_ip, e);
-                    mark_upstream_dead(state, upstream_ip).await;
+                    mark_upstream_status(state, upstream_ip, false).await;
                     continue;
                 }
             }

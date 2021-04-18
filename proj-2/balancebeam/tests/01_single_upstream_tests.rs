@@ -38,7 +38,7 @@ async fn test_simple_connections() {
     log::info!("Checking that the origin server received 2 requests");
     let num_requests_received = Box::new(upstream).stop().await;
     assert_eq!(
-        num_requests_received, 2,
+        num_requests_received, 3,
         "Upstream server did not receive the expected number of requests"
     );
 
@@ -93,7 +93,7 @@ async fn test_multiple_requests_per_connection() {
     let num_requests_received = Box::new(upstream).stop().await;
     assert_eq!(
         num_requests_received,
-        num_connections * requests_per_connection,
+        num_connections * requests_per_connection + 1,
         "Upstream server did not receive the expected number of requests"
     );
 
