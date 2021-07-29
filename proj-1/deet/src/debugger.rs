@@ -1,5 +1,6 @@
 use crate::debugger_command::DebuggerCommand;
-use crate::inferior::Inferior;
+use crate::dwarf_data::{DwarfData, Error as DwarfError};
+use crate::inferior::{Inferior, Status};
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
 
@@ -8,6 +9,17 @@ pub struct Debugger {
     history_path: String,
     readline: Editor<()>,
     inferior: Option<Inferior>,
+    debug_data: DwarfData,
+    breakpoints: Vec<usize>,
+}
+
+fn parse_address(addr: &str) -> Option<usize> {
+    let addr_without_0x = if addr.to_lowercase().starts_with("0x") {
+        &addr[2..]
+    } else {
+        &addr
+    };
+    usize::from_str_radix(addr_without_0x, 16).ok()
 }
 
 impl Debugger {
@@ -19,12 +31,30 @@ impl Debugger {
         let mut readline = Editor::<()>::new();
         // Attempt to load history from ~/.deet_history if it exists
         let _ = readline.load_history(&history_path);
+        let debug_data = match DwarfData::from_file(target) {
+            Ok(val) => val,
+            Err(DwarfError::ErrorOpeningFile) => {
+                println!("Could not open file {}", target);
+                std::process::exit(1);
+            }
+            Err(DwarfError::DwarfFormatError(err)) => {
+                println!(
+                    "Could not format debugging symbols from {}: {:?}",
+                    target, err
+                );
+                std::process::exit(1);
+            }
+        };
+
+        debug_data.print();
 
         Debugger {
             target: target.to_string(),
             history_path,
             readline,
             inferior: None,
+            debug_data,
+            breakpoints: Vec::new(),
         }
     }
 
@@ -32,17 +62,49 @@ impl Debugger {
         loop {
             match self.get_next_command() {
                 DebuggerCommand::Run(args) => {
-                    if let Some(inferior) = Inferior::new(&self.target, &args) {
+                    self.kill_inferior();
+                    if let Some(inferior) = Inferior::new(&self.target, &args, &self.breakpoints) {
                         // Create the inferior
                         self.inferior = Some(inferior);
                         // TODO (milestone 1): make the inferior run
                         // You may use self.inferior.as_mut().unwrap() to get a mutable reference
                         // to the Inferior object
+                        self.continue_inferior();
                     } else {
                         println!("Error starting subprocess");
                     }
                 }
+                DebuggerCommand::Continue => {
+                    if self.inferior.is_none() {
+                        println!("No inferior running");
+                    } else {
+                        self.continue_inferior();
+                    }
+                }
+                DebuggerCommand::Backtrace => {
+                    if self.inferior.is_none() {
+                        println!("No inferior running");
+                    } else {
+                        self.inferior
+                            .as_ref()
+                            .unwrap()
+                            .print_backtrace(&self.debug_data);
+                    }
+                }
+                DebuggerCommand::Breakpoint(addr) => match parse_address(&addr[1..]) {
+                    Some(bp) => {
+                        self.breakpoints.push(bp);
+                        if self.inferior.is_some() {
+                            self.inferior
+                                .as_mut()
+                                .unwrap()
+                                .set_breakpoint(bp, self.breakpoints.len() - 1);
+                        }
+                    }
+                    None => println!("Unable to parse address {}", addr),
+                },
                 DebuggerCommand::Quit => {
+                    self.kill_inferior();
                     return;
                 }
             }
@@ -87,6 +149,47 @@ impl Debugger {
                     }
                 }
             }
+        }
+    }
+
+    // Continue the inferior and handle the status returned
+    fn continue_inferior(&mut self) {
+        /*
+        match self.inferior.as_mut().unwrap().continue_process() {
+            Ok(status) => match status {
+                Status::Exited(code) => {
+                    println!("Child exited (status {})", code);
+                    self.inferior = None;
+                }
+                Status::Stopped(signal, rip) => {
+                    println!("Child stopped with {}", signal);
+                    self.inferior
+                        .as_ref()
+                        .unwrap()
+                        .print_stopped_instruction(&self.debug_data, rip);
+                }
+                Status::Signaled(signal) => {
+                    println!("Child signaled with {}", signal)
+                }
+            },
+            Err(e) => println!("Child errored {}", e),
+        }
+        */
+        self.inferior
+            .as_mut()
+            .unwrap()
+            .continue_child(&self.debug_data);
+    }
+
+    // Kill any inferior running
+    fn kill_inferior(&mut self) {
+        if self.inferior.is_some() {
+            println!(
+                "Killing running inferior (pid {})",
+                self.inferior.as_ref().unwrap().pid()
+            );
+            self.inferior.as_mut().unwrap().kill();
+            self.inferior = None;
         }
     }
 }

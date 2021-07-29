@@ -1,17 +1,14 @@
 use grid::Grid;
-// For lcs()
+use std::cmp::max;
 use std::env;
 use std::fs::File;
-// For read_file_lines()
 use std::io::{self, BufRead, BufReader};
-// For read_file_lines()
 use std::process;
-use std::cmp::max;
 
 pub mod grid;
 
 /// Reads the file at the supplied path, and returns a vector of strings.
-fn read_file_lines(filename: &String) -> Result<Vec<String>, io::Error> {
+fn read_file_lines(filename: &str) -> Result<Vec<String>, io::Error> {
     let mut lines: Vec<String> = Vec::new();
     let file = File::open(filename)?;
     for line in BufReader::new(file).lines() {
@@ -20,7 +17,7 @@ fn read_file_lines(filename: &String) -> Result<Vec<String>, io::Error> {
     Ok(lines)
 }
 
-fn lcs(seq1: &Vec<String>, seq2: &Vec<String>) -> Grid {
+fn lcs(seq1: &[String], seq2: &[String]) -> Grid {
     // Note: Feel free to use unwrap() in this code, as long as you're basically certain it'll
     // never happen. Conceptually, unwrap() is justified here, because there's not really any error
     // condition you're watching out for (i.e. as long as your code is written correctly, nothing
@@ -29,28 +26,33 @@ fn lcs(seq1: &Vec<String>, seq2: &Vec<String>) -> Grid {
     let m = seq1.len();
     let n = seq2.len();
     let mut c = Grid::new(m + 1, n + 1);
-    for i in 0..m {
-        for j in 0..n {
-            if seq1[i] == seq2[j] {
+    for (i, line1) in seq1.iter().enumerate().take(m) {
+        for (j, line2) in seq2.iter().enumerate().take(n) {
+            if line1 == line2 {
                 c.set(i + 1, j + 1, c.get(i, j).unwrap() + 1).unwrap();
             } else {
-                c.set(i + 1, j + 1, max(c.get(i + 1, j).unwrap(), c.get(i, j + 1).unwrap()));
+                c.set(
+                    i + 1,
+                    j + 1,
+                    max(c.get(i + 1, j).unwrap(), c.get(i, j + 1).unwrap()),
+                )
+                .unwrap();
             }
         }
     }
     c
 }
 
-fn print_diff(lcs_table: &Grid, lines1: &Vec<String>, lines2: &Vec<String>, i: usize, j: usize) {
+fn print_diff(lcs_table: &Grid, lines1: &[String], lines2: &[String], i: usize, j: usize) {
     if i > 0 && j > 0 && lines1[i - 1] == lines2[j - 1] {
         print_diff(lcs_table, lines1, lines2, i - 1, j - 1);
-        println!(" {:?}", lines1[i - 1]);
+        println!(" {}", lines1[i - 1]);
     } else if j > 0 && (i == 0 || lcs_table.get(i, j - 1) >= lcs_table.get(i - 1, j)) {
         print_diff(lcs_table, lines1, lines2, i, j - 1);
-        println!("> {:?}", lines2[j - 1]);
+        println!("> {}", lines2[j - 1]);
     } else if i > 0 && (j == 0 || lcs_table.get(i, j - 1) < lcs_table.get(i - 1, j)) {
         print_diff(lcs_table, lines1, lines2, i - 1, j);
-        println!("< {:?}", lines1[i - 1]);
+        println!("< {}", lines1[i - 1]);
     } else {
         println!();
     }

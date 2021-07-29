@@ -210,7 +210,7 @@ pub struct File {
     pub lines: Vec<Line>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Line {
     pub file: String,
     pub number: usize,
@@ -222,5 +222,3 @@ impl fmt::Display for Line {
         write!(f, "{}:{}", self.file, self.number)
     }
 }
-
-
